@@ -1,0 +1,238 @@
+# Defines some useful functions. (Though some have certainly fallen out of use.)
+
+# TODO(2015-02-22): This actually used to be pretty cool, but I see 
+# little need for it now: 
+((++_READ_BASHRC_EXTRA)) # Used for import ordering.
+
+# =================================================
+#              BASH HELPER FUNCTIONS
+# =================================================
+
+# Alias `source` to conveniently re-source `.bashrc` when no argument
+# is supplied.
+function source() {
+	if [ $# -eq 1 ]; then
+	  builtin source "$@"
+  else
+    bashrc="${HOME}/.bashrc"
+    echo "[source] no argument; sourcing $bashrc"
+    builtin source "$bashrc"
+  fi
+}
+
+# Print the definition of a shell alias or function.
+# Also print filename and line number for shell functions.
+function get-definition() {
+  if [ $# -lt 1 ]; then
+    return 1 # Otherwise declare dumps all defined names.
+  fi
+
+  # Filename and line number (functions)
+  shopt -s extdebug
+  declare -F "$@"
+  shopt -u extdebug
+
+  # Definition
+  result=$(type -a "$@" 2> /dev/null)
+  [ $? = 0 ] && echo "$result"
+  return $?
+}
+
+# Alias `which` so that it can additionally report on bash 
+# functions and aliases.
+function which() {
+  # TODO(2014-12-31): mimic the binary, which iterates over 
+  # all input symbols.
+  result=$(command which "$@")
+  if [ $result ]; then
+    echo "$result"
+    return $?
+  else
+    result=$(get-definition "$@")
+    echo "$result"
+    return $?
+  fi
+}
+
+# =================================================
+#                   ALERTING
+# =================================================
+
+# (The following alias is taken from Ubuntu 12.04's default .bashrc file.)
+# Add an "alert" alias for long running commands.
+# Example Usage: sleep 10; alert
+alias alert='notify-send --urgency=low -i "$([ $? = 0 ] && echo terminal || echo error)" "$(history|tail -n1|sed -e '\''s/^\s*[0-9]\+\s*//;s/[;&|]\s*alert$//'\'')"'
+
+# Play a TTS audio alert of the argument. (Requires `festival`)
+function audio-alert() {
+  echo "$@" | festival --tts
+  return $?
+}
+
+# Continue playing audio alert until acknowledged.
+# TODO(2014-12-31): Add parameter for sleep delay.
+function infinite-audio-alert() {
+  while true; do
+    audio-alert "$@"
+    sleep 5
+  done
+}
+
+# Visually and auditorily alert until acknowledged.
+# TODO(2014-12-31): Add parameter for sleep delay.
+function infinite-notify() {
+  notice="$@"
+  if [ $# -lt 1 ]; then
+    notice='Job completed.'
+  fi
+  while true; do
+    alert --expire-time=10000 "$notice"
+    audio-alert "$notice"
+    sleep 15
+  done
+}
+
+# Notify with respect to the exit status code of the previous command.
+# Usage, eg. `./configure && make ; notify-status [success-msg, [fail-msg]]`
+#   arg1 (optional): success message
+#   arg2 (optional): failure message
+function infinite-notify-exit-status() {
+  return_code=$?
+
+  success_message='The previous process completed successfully.'
+  failure_message='The previous process did not complete successfully.'
+
+  if [ $# -gt 0 ]; then success_message="$1"; fi
+  if [ $# -gt 1 ]; then failure_message="$2"; fi
+
+  if [ $return_code != 0 ]; then
+    infinite-notify "$failure_message"
+  else
+    infinite-notify "$success_message"
+  fi
+}
+
+# ================================================= 
+#                   NAVIGATION
+# ================================================= 
+
+# If in a symlinked directory, this changes to the real one.
+function shed-symlinks() {
+  cd $(pwd -P)
+}
+
+
+# =================================================
+#            SSH SESSION MANAGEMENT
+# =================================================
+
+# Auto SSH-ADD for commands
+# Brilliant solution: http://askubuntu.com/a/27298
+function check-ssh-add() {
+	# XXX: My system returns 'awesome'
+	#if [ "$DESKTOP_SESSION" == "" ]; then
+	#fi
+	if [[ `ssh-add -l` != *id_?sa* ]]; then 
+		echo -n '[ssh-add] '
+		ssh-add -t 5h  ## 5 hour ssh-agent expiration
+	fi
+}
+
+# Check that we're ssh-added for git push.
+function git() {
+	if [ "$1" == "push" ]; then
+		check-ssh-add
+	fi
+	/usr/bin/git "$@"
+}
+
+function rsync() {
+	cmd=$@
+	search="ssh"
+	if [[ "$cmd" == *"$search"* ]]; then
+		check-ssh-add
+	fi
+	/usr/bin/rsync "$@"
+}
+
+function ssh() {
+	check-ssh-add
+	/usr/bin/ssh "$@"
+}
+
+
+# =================================================
+#            Git / Github Simplifications
+# =================================================
+
+# Change to the root directory of a git project.
+function cd-base() {
+  # TODO(2014-12-31): Include script in bash dotfiles repository.
+	PROJ_BASEDIR=$(find_project_basedir)
+	RET=$?
+	if [ $RET -ne 0 ]; then
+		return
+	fi
+	if [ -n "$1" ]; then
+		PROJ_BASEDIR="$PROJ_BASEDIR/$1"
+	fi
+	cd "$PROJ_BASEDIR"
+}
+
+alias cbranch='git rev-parse --abbrev-ref HEAD'
+
+# Shorthand/Defaults for git push
+function git-push() {
+	dest=''
+	ref=''
+	if [ $# -eq 0 ]; then
+		dest='github'
+		ref=$(cbranch)
+	elif [ $# -eq 1 ]; then
+		dest=$1
+		ref=$(cbranch)
+	else
+		dest=$1
+		ref=$2
+	fi
+	echo "> Pushing to $dest the ref $ref"
+	git push $dest $ref
+}
+
+# Shorthand/Defaults for git pull
+function git-pull() {
+	dest=''
+	ref=''
+	if [ $# -eq 0 ]; then
+		dest='github'
+		ref='master'
+	elif [ $# -eq 1 ]; then
+		dest=$1
+		ref='master'
+	else
+		dest=$1
+		ref=$2
+	fi
+	echo "> Pulling from $dest the ref $ref"
+	git pull $dest $ref
+}
+
+function push() {
+	ref=''
+	if [ $# -eq 0 ]; then
+		ref=$(cbranch)
+	else
+		ref=$1
+	fi
+	git-push github $ref || git-push origin $ref || git-push private $ref
+}
+
+function pull() {
+	ref=''
+	if [ $# -eq 0 ]; then
+		ref='master'
+	else
+		ref=$1
+	fi
+	git-pull github $ref || git-pull origin $ref || git-pull private $ref
+}
